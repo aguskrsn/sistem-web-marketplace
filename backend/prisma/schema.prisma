@@ -1,0 +1,311 @@
+// ============================================================
+// PRISMA SCHEMA - Fabiebsky Database
+// PostgreSQL (Supabase)
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Enum ──────────────────────────────────────────────────────
+
+enum Role {
+  USER
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum AuthProvider {
+  LOCAL
+  GOOGLE
+}
+
+enum ProductStatus {
+  AVAILABLE
+  LOCKED
+  SOLD
+}
+
+enum ProductBrand {
+  FAB      // Fabiebsky
+  CURATED  // Fabiebsky.curated
+}
+
+enum NumberSize {
+  XS
+  S
+  M
+  L
+  XL
+  XXL
+  FREE_SIZE
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  SHIPPED
+  COMPLETED
+  CANCELLED
+  EXPIRED
+}
+
+enum PaymentMethod {
+  BANK_TRANSFER
+  E_WALLET
+  COD
+  OTHER
+}
+
+// ── User ──────────────────────────────────────────────────────
+
+model User {
+  id           String       @id @default(uuid())
+  email        String       @unique
+  name         String
+  avatar       String?
+  phone        String?
+  address      String?
+  passwordHash String?
+  role         Role         @default(USER)
+  provider     AuthProvider @default(LOCAL)
+  googleId     String?      @unique
+  isVerified   Boolean      @default(false)
+  isActive     Boolean      @default(true)
+  
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  lastLoginAt  DateTime?
+
+  // Relations
+  orders       Order[]
+  refreshTokens RefreshToken[]
+  cart         CartItem[]
+  wishlist     WishlistItem[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  revoked   Boolean  @default(false)
+
+  @@map("refresh_tokens")
+}
+
+// ── Product ───────────────────────────────────────────────────
+
+model Category {
+  id          String    @id @default(uuid())
+  name        String    @unique
+  slug        String    @unique
+  description String?
+  image       String?
+  brand       ProductBrand @default(FAB)
+  isActive    Boolean   @default(true)
+  sortOrder   Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  products    Product[]
+
+  @@map("categories")
+}
+
+model Product {
+  id          String        @id @default(uuid())
+  name        String
+  slug        String        @unique
+  description String?
+  price       Decimal       @db.Decimal(12, 2)
+  brand       ProductBrand  @default(FAB)
+  categoryId  String?
+  category    Category?     @relation(fields: [categoryId], references: [id])
+  
+  // Stock numbers (lottery system)
+  totalNumbers Int          @default(0)
+  soldNumbers  Int          @default(0)
+  
+  // Media
+  images      ProductImage[]
+  
+  isActive    Boolean       @default(true)
+  isFeatured  Boolean       @default(false)
+  
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  // Relations
+  numbers     ProductNumber[]
+  cartItems   CartItem[]
+  wishlistItems WishlistItem[]
+  orderItems  OrderItem[]
+
+  @@map("products")
+}
+
+model ProductImage {
+  id        String   @id @default(uuid())
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  url       String
+  alt       String?
+  isPrimary Boolean  @default(false)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@map("product_images")
+}
+
+model ProductNumber {
+  id        String        @id @default(uuid())
+  productId String
+  product   Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  number    String        // Nomor yang dilotere (mis: "001", "042")
+  size      NumberSize?
+  status    ProductStatus @default(AVAILABLE)
+  lockedUntil DateTime?   // Waktu lock berakhir
+  lockedByUserId String?
+  
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  orderItem OrderItem?
+
+  @@unique([productId, number])
+  @@map("product_numbers")
+}
+
+// ── Cart & Wishlist ──────────────────────────────────────────
+
+model CartItem {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  quantity  Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, productId])
+  @@map("cart_items")
+}
+
+model WishlistItem {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, productId])
+  @@map("wishlist_items")
+}
+
+// ── Order ─────────────────────────────────────────────────────
+
+model Order {
+  id              String        @id @default(uuid())
+  orderCode       String        @unique @default(cuid())
+  userId          String
+  user            User          @relation(fields: [userId], references: [id])
+  
+  status          OrderStatus   @default(PENDING)
+  paymentMethod   PaymentMethod?
+  paymentProof    String?       // URL bukti pembayaran
+  paymentDate     DateTime?
+  
+  // Address snapshot
+  shippingName    String
+  shippingPhone   String
+  shippingAddress String
+  shippingCity    String
+  shippingPostal  String?
+  
+  // Pricing
+  subtotal        Decimal       @db.Decimal(12, 2)
+  shippingCost    Decimal       @db.Decimal(12, 2) @default(0)
+  discount        Decimal       @db.Decimal(12, 2) @default(0)
+  total           Decimal       @db.Decimal(12, 2)
+  
+  notes           String?
+  trackingNumber  String?
+  
+  expiredAt       DateTime?     // Batas waktu pembayaran
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  items           OrderItem[]
+  timeline        OrderTimeline[]
+
+  @@map("orders")
+}
+
+model OrderItem {
+  id              String         @id @default(uuid())
+  orderId         String
+  order           Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId       String
+  product         Product        @relation(fields: [productId], references: [id])
+  productNumberId String?        @unique
+  productNumber   ProductNumber? @relation(fields: [productNumberId], references: [id])
+  
+  // Snapshot at purchase time
+  productName     String
+  productPrice    Decimal        @db.Decimal(12, 2)
+  quantity        Int            @default(1)
+  
+  createdAt       DateTime       @default(now())
+
+  @@map("order_items")
+}
+
+model OrderTimeline {
+  id        String      @id @default(uuid())
+  orderId   String
+  order     Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  status    OrderStatus
+  message   String?
+  createdAt DateTime    @default(now())
+  createdBy String?     // userId atau "system"
+
+  @@map("order_timelines")
+}
+
+// ── Site Settings ─────────────────────────────────────────────
+
+model SiteSetting {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     String
+  type      String   @default("string") // string, json, boolean, number
+  updatedAt DateTime @updatedAt
+
+  @@map("site_settings")
+}
+
+model Banner {
+  id          String   @id @default(uuid())
+  title       String
+  subtitle    String?
+  image       String
+  link        String?
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("banners")
+}
